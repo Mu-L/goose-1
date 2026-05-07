@@ -171,6 +171,7 @@ pub struct Agent {
 
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
+    pub(super) hook_manager: crate::hooks::HookManager,
     container: Mutex<Option<Container>>,
 }
 
@@ -282,8 +283,20 @@ impl Agent {
                 permission_manager,
                 provider.clone(),
             ),
+            hook_manager: crate::hooks::HookManager::load(std::env::current_dir().ok().as_deref()),
             container: Mutex::new(None),
         }
+    }
+
+    /// Emit a lifecycle hook event with no extra context. Useful for events
+    /// that have no matcher (e.g. `SessionStart`, `SessionEnd`).
+    pub async fn emit_hook(&self, event: crate::hooks::HookEvent, session_id: &str) {
+        if !self.hook_manager.has_hooks(event) {
+            return;
+        }
+        self.hook_manager
+            .emit(event, crate::hooks::HookContext::new(event, session_id))
+            .await;
     }
 
     /// Create a tool inspection manager with default inspectors
@@ -617,6 +630,25 @@ impl Agent {
             .await
             .record_tool_arguments(&tool_call.arguments, &session.working_dir);
 
+        if self
+            .hook_manager
+            .has_hooks(crate::hooks::HookEvent::PreToolUse)
+        {
+            let ctx =
+                crate::hooks::HookContext::new(crate::hooks::HookEvent::PreToolUse, &session.id)
+                    .with_tool(
+                        tool_call.name.to_string(),
+                        tool_call
+                            .arguments
+                            .as_ref()
+                            .map(|a| serde_json::Value::Object(a.clone())),
+                    )
+                    .with_working_dir(session.working_dir.to_string_lossy().to_string());
+            self.hook_manager
+                .emit(crate::hooks::HookEvent::PreToolUse, ctx)
+                .await;
+        }
+
         if tool_call.name == PLATFORM_MANAGE_SCHEDULE_TOOL_NAME {
             let arguments = tool_call
                 .arguments
@@ -681,6 +713,25 @@ impl Agent {
         };
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
+
+        if self
+            .hook_manager
+            .has_hooks(crate::hooks::HookEvent::PostToolUse)
+        {
+            let ctx =
+                crate::hooks::HookContext::new(crate::hooks::HookEvent::PostToolUse, &session.id)
+                    .with_tool(
+                        tool_call.name.to_string(),
+                        tool_call
+                            .arguments
+                            .as_ref()
+                            .map(|a| serde_json::Value::Object(a.clone())),
+                    )
+                    .with_working_dir(session.working_dir.to_string_lossy().to_string());
+            self.hook_manager
+                .emit(crate::hooks::HookEvent::PostToolUse, ctx)
+                .await;
+        }
 
         (
             request_id,
@@ -1082,6 +1133,20 @@ impl Agent {
         }
 
         let message_text = user_message.as_concat_text();
+
+        if self
+            .hook_manager
+            .has_hooks(crate::hooks::HookEvent::UserPromptSubmit)
+        {
+            let ctx = crate::hooks::HookContext::new(
+                crate::hooks::HookEvent::UserPromptSubmit,
+                &session_config.id,
+            )
+            .with_message(message_text.clone());
+            self.hook_manager
+                .emit(crate::hooks::HookEvent::UserPromptSubmit, ctx)
+                .await;
+        }
 
         // Track custom slash command usage (don't track command name for privacy)
         if message_text.trim().starts_with('/') {

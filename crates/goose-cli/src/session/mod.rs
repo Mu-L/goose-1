@@ -500,6 +500,10 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
+        self.agent
+            .emit_hook(goose::hooks::HookEvent::SessionStart, &self.session_id)
+            .await;
+
         if let Some(prompt) = prompt {
             let msg = Message::user().with_text(&prompt);
             self.process_message(msg, CancellationToken::default(), true)
@@ -535,6 +539,10 @@ impl CliSession {
             self.handle_input(input, &history_manager, &mut editor, &conversation_strings)
                 .await?;
         }
+
+        self.agent
+            .emit_hook(goose::hooks::HookEvent::SessionEnd, &self.session_id)
+            .await;
 
         println!(
             "\n  {} {}",
@@ -1044,9 +1052,17 @@ impl CliSession {
 
     /// Process a single message and exit
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
+        self.agent
+            .emit_hook(goose::hooks::HookEvent::SessionStart, &self.session_id)
+            .await;
         let message = Message::user().with_text(&prompt);
-        self.process_message(message, CancellationToken::default(), false)
-            .await?;
+        let result = self
+            .process_message(message, CancellationToken::default(), false)
+            .await;
+        self.agent
+            .emit_hook(goose::hooks::HookEvent::SessionEnd, &self.session_id)
+            .await;
+        result?;
         Ok(())
     }
 
