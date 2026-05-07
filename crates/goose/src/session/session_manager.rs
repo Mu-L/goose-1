@@ -1593,6 +1593,17 @@ impl SessionStorage {
 
         builder = builder.goose_mode(original_session.goose_mode);
 
+        // If the original session is linked to a thread, fork that thread so
+        // the copy inherits project membership, persona, provider, and any
+        // other thread-level metadata (project_id, persona_id, etc.).
+        if let Some(ref thread_id) = original_session.thread_id {
+            let thread_mgr =
+                super::thread_manager::ThreadManager::new(session_manager.storage().clone());
+            if let Ok(new_thread) = thread_mgr.fork_thread(thread_id).await {
+                builder = builder.thread_id(Some(new_thread.id));
+            }
+        }
+
         builder.apply().await?;
 
         if let Some(conversation) = original_session.conversation {
